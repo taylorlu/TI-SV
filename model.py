@@ -165,38 +165,18 @@ class ClassificationModel():
             logits = self.embedding(self.melInputs, is_training=is_training)  # (n, t ,d)
 
         with tf.variable_scope("vlad"):
-            inputs = tf.reshape(logits, [-1, logits.get_shape()[-1]]) #(n*t, d)
-            # alfas = tf.get_variable('alfa', dtype=tf.float32, shape=[self.num_clusters]) #(k)
-            alfas_pow = tf.ones(self.num_clusters)*100
-            # alfas_pow = tf.square(alfas) +1e-10
-            MUs = tf.get_variable("mu", shape=[self.num_clusters, logits.get_shape()[-1]], dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer(), trainable=True)
 
-            weights = tf.matmul( 2*tf.matrix_diag(alfas_pow), MUs ) #(k, d)
-            biases = -tf.multiply(alfas_pow, tf.reduce_sum(tf.square(MUs),1)) #(k)
-            output = tf.matmul(inputs, tf.transpose(weights)) + biases #(n*t, k)
-            PI = tf.nn.softmax(output) #(n*t, k)
-
-            tileInputs = tf.tile(inputs, [1, self.num_clusters])
-            tileInputs2 = tf.reshape(tileInputs, [-1, self.num_clusters, logits.get_shape()[-1]])    # (n*t, k, d)
-
-            offcenter = tileInputs2 - MUs # (n*t, k, d)
-
-            ####
-            offcenter = tf.reshape(offcenter, [tf.shape(logits)[0], tf.shape(logits)[1], self.num_clusters, logits.get_shape()[-1]]) #(n,t,k,h)
-            offcenter = tf.transpose(offcenter, [0, 2, 1, 3])    # (n, k, t, h)
-
-            PI = tf.transpose(tf.reshape(PI, [tf.shape(logits)[0], tf.shape(logits)[1], self.num_clusters]), [0, 2, 1])  # (n, k, t)
-            tilePI = tf.tile(tf.expand_dims(PI, -1), [1, 1, 1, logits.get_shape()[-1]]) # (n, k, t, h)
-            offcenter = tf.multiply(tilePI, offcenter)    # (n, k, t, h)
-            vladVector = tf.reduce_sum(offcenter, 2)    # (n, k, h)
-            vladVector = tf.reshape(vladVector, [-1, self.num_clusters*logits.get_shape()[-1]])    # (n, k*h)
-            print(vladVector.get_shape())
+            denseVector = tf.layers.conv1d(logits, 1, 1)
+            denseVector = tf.reshape(denseVector, [tf.shape(logits)[0], tf.shape(logits)[1]])
+            alpha = tf.expand_dims(tf.nn.softmax(denseVector), 2)
+            contextVector = tf.reduce_sum(alpha*logits, 1, name='context') # (n, d)
 
         # fc to bottleneck
-        bottleneck = tf.layers.dense(vladVector, self.bottleneck_size, name='projection')  # (n, e)
+        bottleneck = tf.layers.dense(contextVector, self.bottleneck_size, name='projection')  # (n, e)
+        bottleneck = tf.layers.dropout(bottleneck, rate=0.5)
 
         normVector = tf.nn.l2_normalize(bottleneck, 1, 1e-10, name='normVector')
 
-        totalloss = self.totalLoss(bottleneck, self.labelInputs)
+        totalloss, margin_center_loss, norm_loss = self.totalLoss(normVector, self.labelInputs)
 
-        return totalloss, normVector, tf.reduce_mean(alfas_pow)
+        return totalloss, normVector, margin_center_loss, norm_loss
